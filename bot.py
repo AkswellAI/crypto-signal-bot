@@ -245,3 +245,27 @@ app.run_polling()
 
 if __name__ == '__main__':
     main()
+import os
+
+def main():
+    # Команды Telegram
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("plot", plot_command))
+    app.add_handler(CommandHandler("generate_token", generate_token_command))
+    app.add_handler(CommandHandler("users", users_command))
+    app.add_handler(CommandHandler("tokens", tokens_command))
+
+    # Запуск сигнального потока
+    Thread(target=signal_loop, daemon=True).start()
+
+    # Flask для админки
+    port = int(os.environ.get("PORT", 8080))
+    Thread(
+        target=lambda: flask_app.run(host="0.0.0.0", port=port),
+        daemon=True
+    ).start()
+
+    # Запуск Telegram-бота только локально
+    if os.environ.get("RAILWAY_ENVIRONMENT") is None:
+        app.run_polling()
