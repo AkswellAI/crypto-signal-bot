@@ -241,7 +241,7 @@ Thread(target=signal_loop, daemon=True).start()
 port = int(os.environ.get("PORT", 8080))
 Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
 
-app.run_polling()
+application.run_polling()
 
 
 if __name__ == '__main__':
