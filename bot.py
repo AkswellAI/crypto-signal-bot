@@ -232,9 +232,16 @@ def main():
     app.add_handler(CommandHandler("users", users_command))
     app.add_handler(CommandHandler("tokens", tokens_command))
 
-    Thread(target=signal_loop, daemon=True).start()
-    Thread(target=lambda: flask_app.run(port=5000), daemon=True).start()
-    app.run_polling()
+    import os
+
+Thread(target=signal_loop, daemon=True).start()
+
+# Поддержка Railway порта
+port = int(os.environ.get("PORT", 8080))
+Thread(target=lambda: flask_app.run(host="0.0.0.0", port=port), daemon=True).start()
+
+app.run_polling()
+
 
 if __name__ == '__main__':
     main()
