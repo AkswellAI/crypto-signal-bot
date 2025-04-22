@@ -47,8 +47,23 @@ def receive_update():
 if __name__ == "__main__":
     # ставим webhook у бота на наш public URL
     webhook_url = f"{PUBLIC_URL}/webhook/{TOKEN}"
-    Bot(TOKEN).set_webhook(webhook_url)
+    import asyncio
+    asyncio.run(Bot(TOKEN).set_webhook(webhook_url))
+
 
     # запускаем Flask на нужном порту
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=port)
+
+
+from flask import Flask
+
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def index():
+    return "Приложение работает!"
+
+@flask_app.route("/admin")
+def admin():
+    return "Админка пока не настроена."
