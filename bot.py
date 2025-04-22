@@ -1,156 +1,132 @@
 import os
-import random
 import time
-import io
-import string
-import secrets
-from datetime import datetime
-from threading import Thread
+import random
+import threading
+from datetime import datetime, timezone
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+import uvicorn
 
-import matplotlib.pyplot as plt
-from flask import Flask, render_template_string, request, redirect, send_file
-from telegram import Bot
+from telegram import Update
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
 )
 
 # === НАСТРОЙКИ ===
-TOKEN = "7943446786:AAHCIqydv95YH6uurQ_pm_xcQuhtITPVc_E"
-ADMIN_ID = 689416245
-CHECK_INTERVAL = 60  # сек
+TOKEN         = "7943446786:AAHCIqydv95YH6uurQ_pm_xcQuhtITPVc_E"
+ADMIN_ID      = 6894162425
+CHECK_INTERVAL = 60  # секунд
 
-# допустимые монеты и токены-приглашения
 COINS = [f"COIN{i}/USDT" for i in range(1, 201)]
-invite_tokens = {secrets.token_urlsafe(8): False for _ in range(5)}
-
-# статистика сигналов
 signals_today = []
 authorized_users = set()
+invite_tokens = {"abc123": False, "xyz789": False}
 
-# инициализация Flask и Telegram Application
-flask_app = Flask(__name__)
-telegram_app: Application
-
-
-# --- ЛОГИКА СИГНАЛОВ ---
+# === ФУНКЦИИ БОТА ===
 def generate_fake_signal():
     coin = random.choice(COINS)
-    rsi = random.randint(10, 90)
-    when = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    signal = f"{when} — {coin}, RSI={rsi}"
-    return signal
+    rsi  = random.randint(10, 90)
+    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return f"{coin}: RSI={rsi} at {ts}"
 
-def signal_loop():
-    bot = Bot(token=TOKEN)
-    while True:
-        s = generate_fake_signal()
-        signals_today.append(s)
-        for uid in list(authorized_users):
-            bot.send_message(chat_id=uid, text=s)
-        time.sleep(CHECK_INTERVAL)
-
-# --- HANDLERЫ ДЛЯ TELEGRAM ---
-async def start_command(update, context: ContextTypes.DEFAULT_TYPE):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Привет! Пришли /token <твой токен>, чтобы разблокировать рассылку."
+        "Добро пожаловать! Отправьте /invite <токен>, чтобы получить доступ."
     )
 
-async def token_command(update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     if len(context.args) != 1:
-        await update.message.reply_text("Используй /token <твой_токен>.")
-        return
-    t = context.args[0]
-    if t in invite_tokens and not invite_tokens[t]:
-        invite_tokens[t] = True
-        authorized_users.add(user_id)
-        await update.message.reply_text("Токен принят, ты в рассылке!")
+        return await update.message.reply_text("Используйте: /invite <токен>")
+    tok = context.args[0]
+    if tok in invite_tokens and not invite_tokens[tok]:
+        invite_tokens[tok] = True
+        authorized_users.add(uid)
+        await update.message.reply_text("Токен принят! Вы авторизованы.")
     else:
         await update.message.reply_text("Неверный или уже использованный токен.")
 
-async def stats_command(update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("\n".join(signals_today[-10:] or ["—"]))
+async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid not in authorized_users:
+        return await update.message.reply_text("У вас нет доступа.")
+    sig = generate_fake_signal()
+    signals_today.append(sig)
+    await update.message.reply_text(f"Сигнал: {sig}")
 
-async def help_command(update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Доступные команды: /start /token /stats.")
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("Доступ только администратору.")
+    last = signals_today[-10:]
+    text = "\n".join(last) if last else "Нет сигналов за сегодня."
+    await update.message.reply_text("Последние сигналы:\n" + text)
 
-# --- ВЕБ‑АДМИНКА ---
-@flask_app.route("/", methods=["GET"])
-def index():
-    return redirect("/admin")
+# === ФОНОВЫЙ ЦИКЛ СИГНАЛОВ ===
+def signal_loop(app):
+    while True:
+        time.sleep(CHECK_INTERVAL)
+        for uid in authorized_users:
+            sig = generate_fake_signal()
+            signals_today.append(sig)
+            app.bot.send_message(chat_id=uid, text=f"Авто-сигнал: {sig}")
 
-@flask_app.route("/admin", methods=["GET", "POST"])
-def admin_panel():
-    if request.method == "POST":
-        # сгенерировать новый токен
-        new_t = secrets.token_urlsafe(8)
-        invite_tokens[new_t] = False
-    # список токенов
-    tokens_html = "<ul>" + "".join(
-        f"<li>{t} — {'использован' if used else 'свободен'}</li>"
+# === ВЕБ‑АДМИНКА НА FastAPI ===
+web = FastAPI()
+
+@web.get("/", response_class=RedirectResponse)
+def root():
+    return RedirectResponse("/admin")
+
+@web.get("/admin", response_class=HTMLResponse)
+def admin_panel(request: Request):
+    stats = "<br>".join(signals_today[-20:]) or "Нет данных"
+    token_list = "<ul>" + "".join(
+        f"<li>{t} — {'OK' if used else 'Свободен'}</li>"
         for t, used in invite_tokens.items()
     ) + "</ul>"
-    # список пользователей
-    users_html = "<ul>" + "".join(f"<li>{u}</li>" for u in authorized_users) + "</ul>"
-    # график количества сигналов по часам
-    times = [datetime.strptime(s.split(" — ")[0], "%Y-%m-%d %H:%M:%S UTC") for s in signals_today]
-    hours = [t.hour for t in times]
-    plt.figure()
-    plt.hist(hours, bins=range(25))
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png")
-    buf.seek(0)
+    users_list = "<ul>" + "".join(
+        f"<li>{uid}</li>" for uid in authorized_users
+    ) + "</ul>"
 
-    template = """
-    <h1>Admin Панель CryptoBot</h1>
-    <form method="post"><button type="submit">Новый токен</button></form>
-    <h2>Токены</h2>{{ tokens|safe }}
-    <h2>Пользователи</h2>{{ users|safe }}
-    <h2>График сигналов по часам</h2>
-    <img src="/plot.png">
+    return f"""
+    <h1>CryptoBot Admin</h1>
+    <h2>Статистика последних сигналов</h2>
+    <div style="white-space: pre-line;">{stats}</div>
+    <h2>Токены</h2>
+    {token_list}
+    <h2>Пользователи</h2>
+    {users_list}
     """
-    return render_template_string(
-        template, tokens=tokens_html, users=users_html
-    )
 
-@flask_app.route("/plot.png")
-def plot_png():
-    # построить тот же график заново
-    times = [datetime.strptime(s.split(" — ")[0], "%Y-%m-%d %H:%M:%S UTC") for s in signals_today]
-    hours = [t.hour for t in times]
-    plt.figure()
-    plt.hist(hours, bins=range(25))
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png")
-    buf.seek(0)
-    return send_file(buf, mimetype="image/png")
-
-
+# === ТОЧКА ВХОДА ===
 def main():
-    global telegram_app
-    # 1) Telegram
-    telegram_app = ApplicationBuilder().token(TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", start_command))
-    telegram_app.add_handler(CommandHandler("token", token_command))
-    telegram_app.add_handler(CommandHandler("stats", stats_command))
-    telegram_app.add_handler(CommandHandler("help", help_command))
+    # создаём приложение бота
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    # 2) запустить цикл сигналов
-    Thread(target=signal_loop, daemon=True).start()
+    # регистрируем команды
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("invite", invite_command))
+    app.add_handler(CommandHandler("signal", signal_command))
+    app.add_handler(CommandHandler("stats", stats_command))
 
-    # 3) запустить Flask на доступном порту (Railway)
-    port = int(os.environ.get("PORT", 8080))
-    Thread(
-        target=lambda: flask_app.run(host="0.0.0.0", port=port, debug=False),
+    # запускаем фоновый цикл сигналов
+    threading.Thread(target=signal_loop, args=(app,), daemon=True).start()
+
+    # запускаем FastAPI в отдельном потоке
+    threading.Thread(
+        target=lambda: uvicorn.run(
+            web,
+            host="0.0.0.0",
+            port=int(os.environ.get("PORT", 8080)),
+            log_level="info"
+        ),
         daemon=True
     ).start()
 
-    # 4) инициализировать polling Telegram
-    telegram_app.run_polling()
-
+    # запускаем polling
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
